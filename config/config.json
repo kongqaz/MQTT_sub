@@ -1,0 +1,12 @@
+{
+	"topic1": {
+		"table": "MyDB.t_topic1",
+		"api": "/api/topic1/getTopic1",
+		"key": "id"
+	},
+	"topic2": {
+		"table": "MyDB.t_topic2",
+		"api": "/api/topic2/getTopic1",
+		"key": "name"
+	}
+}

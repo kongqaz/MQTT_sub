@@ -1,0 +1,6 @@
+{
+  "broker": "tcp://localhost:1883",
+  "username": "",
+  "password": "",
+  "clientId": "mqtt_subscriber"
+}
