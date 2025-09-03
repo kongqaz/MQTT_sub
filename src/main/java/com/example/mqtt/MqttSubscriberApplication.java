@@ -93,9 +93,9 @@ public class MqttSubscriberApplication {
 
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
-        options.setAutomaticReconnect(true);
-        options.setConnectionTimeout(30);
-        options.setKeepAliveInterval(60);
+        options.setAutomaticReconnect(true); // 启用自动重连
+        options.setConnectionTimeout(15); // 15秒连接超时
+        options.setKeepAliveInterval(30); // 30秒心跳间隔
 
         if (username != null && !username.isEmpty()) {
             options.setUserName(username);
