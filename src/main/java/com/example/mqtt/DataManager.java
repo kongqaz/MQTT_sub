@@ -66,7 +66,7 @@ public class DataManager {
                 return rootNode.size() > 0 ? rootNode : null;
             }
         } catch (SQLException e) {
-            System.err.println("Error loading initial data: " + e.getMessage());
+            log.error("Error loading initial data: " + e.getMessage());
             e.printStackTrace();
             return null;
         }
@@ -90,7 +90,7 @@ public class DataManager {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error saving data to database: " + e.getMessage());
+            log.error("Error saving data to database: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -100,7 +100,7 @@ public class DataManager {
         Map<String, String> columnTypes = getTableColumns(tableName);
 
         if (columnTypes.isEmpty()) {
-            System.err.println("Cannot get table columns for: " + tableName);
+            log.error("Cannot get table columns for: " + tableName);
             return;
         }
 
