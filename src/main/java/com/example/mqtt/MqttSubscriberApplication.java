@@ -69,13 +69,15 @@ public class MqttSubscriberApplication {
         // 为每个topic动态注册API路由
         config.getTopics().forEach((topic, topicConfig) -> {
             Spark.get(topicConfig.getApi(), (req, res) -> {
+                res.type("application/json");
                 JsonNode data = topicData.get(topic);
                 if (data != null) {
                     log.info("Returning data for topic: " + topic);
                     return data.toString();
                 } else {
-                    res.status(404);
-                    return "No data available for topic: " + topic;
+//                    res.status(404);
+//                    return "No data available for topic: " + topic;
+                    return "[]";
                 }
             });
             log.info("Registered API: GET " + topicConfig.getApi() + " for topic: " + topic);
