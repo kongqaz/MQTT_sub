@@ -76,9 +76,9 @@ public class DataManager {
     public void saveToDatabase(String table, String keyField, JsonNode data) {
         try {
             // 解析表名
-//            String[] parts = table.split("\\.");
-//            String tableName = parts.length > 1 ? parts[1] : parts[0];
-            String tableName = table;
+            String[] parts = table.split("\\.");
+            String tableName = parts.length > 1 ? parts[1] : parts[0];
+//            String tableName = table;
 
             // 构建INSERT ... ON DUPLICATE KEY UPDATE语句
             if (data.isObject()) {
