@@ -13,8 +13,10 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
@@ -65,6 +67,7 @@ public class MqttMessageCallback implements MqttCallbackExtended {
 
     private void processTopicData(String topic, JsonNode jsonData, TopicConfig topicConfig) {
         try {
+            log.info("step1");
             // 获取或创建该主题的现有数据
             JsonNode existingData = topicData.get(topic);
 
@@ -73,16 +76,26 @@ public class MqttMessageCallback implements MqttCallbackExtended {
                 existingData = dataManager.loadInitialData(topicConfig.getTable(), topicConfig.getKey());
             }
 
-            // 合并新数据与现有数据
-            JsonNode mergedData = mergeJsonData(existingData, jsonData, topicConfig.getKey());
+            log.info("step2");
 
-            // 更新内存中的数据
-            topicData.put(topic, mergedData);
+            final JsonNode finalExistingData = existingData;
+            // 异步合并新数据与现有数据
+            CompletableFuture<JsonNode> mergedDataFuture = CompletableFuture.supplyAsync(() ->
+                    mergeJsonData(finalExistingData, jsonData, topicConfig.getKey()));
 
-            // 保存到数据库
-            dataManager.saveToDatabase(topicConfig.getTable(), topicConfig.getKey(), mergedData);
+            mergedDataFuture.thenAccept(mergedData -> {
+                // 更新内存中的数据
+                topicData.put(topic, mergedData);
 
-            log.info("Processed data for topic: " + topic);
+                log.info("Start save data for topic:{}", topic);
+                // 保存到数据库
+                dataManager.saveToDatabase(topicConfig.getTable(), topicConfig.getKey(), jsonData);
+
+                log.info("Processed data for topic: " + topic);
+            }).exceptionally(throwable -> {
+                log.error("Error processing topic data: " + throwable.getMessage());
+                return null;
+            });
         } catch (Exception e) {
             log.error("Error processing topic data: " + e.getMessage());
             e.printStackTrace();
@@ -94,11 +107,14 @@ public class MqttMessageCallback implements MqttCallbackExtended {
             return newData;
         }
 
+        log.info("step2.1");
         // 创建合并后的数据副本
         JsonNode mergedData = newData.deepCopy();
+        log.info("step2.2");
 
         // 递归查找并更新指定key的数据
         updateByKey(mergedData, existingData, keyField);
+        log.info("step2.3");
 
         return mergedData;
     }
@@ -141,79 +157,71 @@ public class MqttMessageCallback implements MqttCallbackExtended {
                 }
             }
         } else if (target.isArray() && source.isArray()) {
-            // 处理数组情况
-//            for (int i = 0; i < target.size() && i < source.size(); i++) {
-//                updateByKey(target.get(i), source.get(i), keyField);
-//            }
+            ArrayNode targetArray = (ArrayNode) target;
+            ArrayNode sourceArray = (ArrayNode) source;
 
-            // 基于keyField的数组合并逻辑
-            for (JsonNode sourceElement : source) {
-                if (sourceElement.isObject() && ((ObjectNode) sourceElement).has(keyField)) {
-                    String sourceKey = ((ObjectNode) sourceElement).get(keyField).asText();
-                    boolean found = false;
+            // 构建target数组的索引映射
+            Map<String, JsonNode> targetKeyMap = new HashMap<>();
+            Map<String, JsonNode> targetStructureMap = new HashMap<>();
 
-                    // 在target数组中查找具有相同keyField值的元素
-                    for (JsonNode targetElement : target) {
-                        if (targetElement.isObject() && ((ObjectNode) targetElement).has(keyField)) {
-                            String targetKey = ((ObjectNode) targetElement).get(keyField).asText();
-                            if (sourceKey.equals(targetKey)) {
-                                // 找到匹配元素，递归合并
-                                updateByKey(targetElement, sourceElement, keyField);
-                                found = true;
-                                break;
-                            }
-                        }
+            for (JsonNode targetElement : targetArray) {
+                if (targetElement.isObject()) {
+                    ObjectNode obj = (ObjectNode) targetElement;
+                    if (obj.has(keyField)) {
+                        targetKeyMap.put(obj.get(keyField).asText(), targetElement);
+                    } else {
+                        // 为没有keyField的对象建立结构映射
+                        String structureKey = generateStructureKey(targetElement);
+                        targetStructureMap.put(structureKey, targetElement);
                     }
+                }
+            }
 
-                    // 如果未找到匹配元素，则添加到target数组
-                    if (!found) {
-                        ((ArrayNode) target).add(sourceElement);
-                    }
-                } else {
-                    // 对于没有keyField的元素，需要递归处理子孙层
-                    if (sourceElement.isObject()) {
-                        boolean foundInChildren = false;
-                        ObjectNode sourceObj = (ObjectNode) sourceElement;
+            // 遍历source数组进行高效匹配
+            for (JsonNode sourceElement : sourceArray) {
+                if (sourceElement.isObject()) {
+                    ObjectNode sourceObj = (ObjectNode) sourceElement;
+                    if (sourceObj.has(keyField)) {
+                        String sourceKey = sourceObj.get(keyField).asText();
+                        JsonNode matchingTarget = targetKeyMap.get(sourceKey);
 
-                        // 在target数组中查找结构相似的元素
-                        for (JsonNode targetElement : target) {
-                            if (targetElement.isObject() && isStructureSimilar(targetElement, sourceElement)) {
-                                // 结构相似，递归处理
-                                updateByKey(targetElement, sourceElement, keyField);
-                                foundInChildren = true;
-                                break;
-                            }
-                        }
-
-                        // 如果未找到结构相似的元素，则添加到target数组
-                        if (!foundInChildren) {
-                            ((ArrayNode) target).add(sourceElement);
-                        }
-                    } else if (sourceElement.isArray()) {
-                        // 如果元素本身是数组，递归处理数组中的元素
-                        for (JsonNode targetElement : target) {
-                            if (targetElement.isArray()) {
-                                // 递归处理子数组
-                                updateByKey(targetElement, sourceElement, keyField);
-                                break;
-                            }
+                        if (matchingTarget != null) {
+                            // 找到匹配元素，递归合并
+                            updateByKey(matchingTarget, sourceElement, keyField);
+                        } else {
+                            // 如果未找到匹配元素，则添加到target数组
+                            targetArray.add(sourceElement);
+                            targetKeyMap.put(sourceKey, sourceElement);
                         }
                     } else {
-                        // 对于基本类型（字符串、数字等），如果不存在则添加
-                        boolean exists = false;
-                        for (JsonNode targetElement : target) {
-                            if (targetElement.equals(sourceElement)) {
-                                exists = true;
-                                break;
-                            }
-                        }
-                        if (!exists) {
-                            ((ArrayNode) target).add(sourceElement);
+                        // 处理没有keyField的对象
+                        String structureKey = generateStructureKey(sourceElement);
+                        JsonNode matchingTarget = targetStructureMap.get(structureKey);
+
+                        if (matchingTarget != null) {
+                            updateByKey(matchingTarget, sourceElement, keyField);
+                        } else {
+                            targetArray.add(sourceElement);
+                            targetStructureMap.put(structureKey, sourceElement);
                         }
                     }
                 }
             }
         }
+    }
+
+    // 生成结构键值的辅助方法
+    private String generateStructureKey(JsonNode node) {
+        if (node.isObject()) {
+            StringBuilder keyBuilder = new StringBuilder();
+            ObjectNode obj = (ObjectNode) node;
+            Iterator<String> fieldNames = obj.fieldNames();
+            while (fieldNames.hasNext()) {
+                keyBuilder.append(fieldNames.next()).append("|");
+            }
+            return keyBuilder.toString();
+        }
+        return node.getNodeType().toString();
     }
 
     /**
