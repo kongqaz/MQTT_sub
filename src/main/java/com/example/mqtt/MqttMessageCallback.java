@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,15 +25,23 @@ public class MqttMessageCallback implements MqttCallbackExtended {
     private final ApplicationConfig config;
     private final DataManager dataManager;
     private final Map<String, JsonNode> topicData;
+    private final Map<String, JsonNode> filteredTopicData;
+    private final Map<String, Map<String, Integer>> filteredDataIndexMap; // 用于快速查找过滤数据中的项
+    private final Map<String, Set<String>> httpApiKeyFilter;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final Logger loggerDebug = LoggerFactory.getLogger("logger.DEBUG_MSG");
 
     public MqttMessageCallback(ApplicationConfig config, DataManager dataManager,
-                               Map<String, JsonNode> topicData) {
+                               Map<String, JsonNode> topicData,
+                               Map<String, JsonNode> filteredTopicData,
+                               Map<String, Set<String>> httpApiKeyFilter) {
         this.config = config;
         this.dataManager = dataManager;
         this.topicData = topicData;
+        this.filteredTopicData = filteredTopicData;
+        this.filteredDataIndexMap = new ConcurrentHashMap<>();
+        this.httpApiKeyFilter = httpApiKeyFilter;
     }
 
     @Override
@@ -74,6 +83,10 @@ public class MqttMessageCallback implements MqttCallbackExtended {
             // 如果是第一次接收数据，从数据库加载现有数据
             if (existingData == null) {
                 existingData = dataManager.loadInitialData(topicConfig.getTable(), topicConfig.getKey());
+                // 同时构建初始的过滤数据
+                if (existingData != null && httpApiKeyFilter.containsKey(topic)) {
+                    buildInitialFilteredData(topic, existingData, topicConfig);
+                }
             }
 
             log.info("step2");
@@ -87,17 +100,22 @@ public class MqttMessageCallback implements MqttCallbackExtended {
                 // 更新内存中的数据
                 topicData.put(topic, mergedData);
 
+                // 如果该topic需要过滤，增量更新过滤后的数据
+                if (httpApiKeyFilter.containsKey(topic)) {
+                    incrementallyUpdateFilteredData(topic, jsonData, topicConfig);
+                }
+
                 log.info("Start save data for topic:{}", topic);
                 // 保存到数据库
                 dataManager.saveToDatabase(topicConfig.getTable(), topicConfig.getKey(), jsonData);
 
                 log.info("Processed data for topic: " + topic);
             }).exceptionally(throwable -> {
-                log.error("Error processing topic data: " + throwable.getMessage());
+                log.error("Error1 processing topic data: " + throwable.getMessage());
                 return null;
             });
         } catch (Exception e) {
-            log.error("Error processing topic data: " + e.getMessage());
+            log.error("Error2 processing topic data: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -257,5 +275,119 @@ public class MqttMessageCallback implements MqttCallbackExtended {
     @Override
     public void deliveryComplete(IMqttDeliveryToken token) {
         // 不需要处理
+    }
+
+    private void buildInitialFilteredData(String topic, JsonNode initialData, TopicConfig topicConfig) {
+        // 创建过滤后的数据
+        ArrayNode filteredArray = objectMapper.createArrayNode();
+        Map<String, Integer> indexMap = new HashMap<>();
+
+        // 获取过滤规则
+        Set<String> filterValues = httpApiKeyFilter.get(topic);
+        String keyField = topicConfig.getKey();
+
+        if (filterValues != null && keyField != null && initialData.isArray()) {
+            // 遍历初始数据，只保留符合过滤条件的项
+            int index = 0;
+            for (JsonNode item : initialData) {
+                if (item.isObject()) {
+                    ObjectNode obj = (ObjectNode) item;
+                    if (obj.has(keyField)) {
+                        String keyValue = obj.get(keyField).asText();
+                        // 如果项符合过滤条件，添加到过滤数据中
+                        if (filterValues.contains(keyValue)) {
+                            filteredArray.add(item);
+                            indexMap.put(keyValue, index);
+                            index++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 存储过滤后的数据和索引映射
+        if(filteredArray.size() > 0) {
+            filteredTopicData.put(topic, filteredArray);
+            filteredDataIndexMap.put(topic, indexMap);
+        }
+    }
+
+    private void incrementallyUpdateFilteredData(String topic, JsonNode newData, TopicConfig topicConfig) {
+        // 获取现有的过滤数据
+        JsonNode existingFilteredData = filteredTopicData.get(topic);
+        ArrayNode filteredArray;
+
+        // 如果还没有过滤数据，创建一个新的数组
+        if (existingFilteredData == null || !existingFilteredData.isArray()) {
+            filteredArray = objectMapper.createArrayNode();
+            // 初始化索引映射
+            filteredDataIndexMap.put(topic, new HashMap<>());
+        } else {
+            // 使用现有的过滤数据
+            filteredArray = (ArrayNode) existingFilteredData;
+            // 确保索引映射存在
+            filteredDataIndexMap.computeIfAbsent(topic, k -> new HashMap<>());
+        }
+
+        // 获取索引映射
+        Map<String, Integer> indexMap = filteredDataIndexMap.get(topic);
+
+        // 获取过滤规则
+        Set<String> filterValues = httpApiKeyFilter.get(topic);
+        String keyField = topicConfig.getKey();
+
+        if (filterValues != null && keyField != null) {
+            // 处理新数据并增量添加到过滤数据中
+            if (newData.isArray()) {
+                // 如果新数据是数组，逐个检查元素
+                for (JsonNode item : newData) {
+                    if (item.isObject()) {
+                        ObjectNode obj = (ObjectNode) item;
+                        if (obj.has(keyField)) {
+                            String keyValue = obj.get(keyField).asText();
+                            // 如果新项符合过滤条件，添加到过滤数据中
+                            if (filterValues.contains(keyValue)) {
+                                // 检查是否已存在相同key的项，如果存在则替换，否则添加
+                                Integer index = indexMap.get(keyValue);
+                                if (index != null) {
+                                    // 替换已存在的项
+                                    filteredArray.set(index, item);
+                                } else {
+                                    // 添加新项并更新索引
+                                    int newIndex = filteredArray.size();
+                                    filteredArray.add(item);
+                                    indexMap.put(keyValue, newIndex);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (newData.isObject()) {
+                // 如果新数据是单个对象
+                ObjectNode obj = (ObjectNode) newData;
+                if (obj.has(keyField)) {
+                    String keyValue = obj.get(keyField).asText();
+                    // 如果新项符合过滤条件，添加到过滤数据中
+                    if (filterValues.contains(keyValue)) {
+                        // 检查是否已存在相同key的项，如果存在则替换，否则添加
+                        Integer index = indexMap.get(keyValue);
+                        if (index != null) {
+                            // 替换已存在的项
+                            filteredArray.set(index, newData);
+                        } else {
+                            // 添加新项并更新索引
+                            int newIndex = filteredArray.size();
+                            filteredArray.add(newData);
+                            indexMap.put(keyValue, newIndex);
+                        }
+                    }
+                }
+            }
+
+            // 更新过滤数据
+            if(filteredArray.size() > 0) {
+                filteredTopicData.put(topic, filteredArray);
+            }
+        }
     }
 }

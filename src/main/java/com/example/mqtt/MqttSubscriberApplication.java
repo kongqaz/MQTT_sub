@@ -11,10 +11,16 @@ import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import spark.Spark;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import java.io.File;
 
 @Slf4j
 public class MqttSubscriberApplication {
@@ -22,6 +28,8 @@ public class MqttSubscriberApplication {
     private ApplicationConfig config;
     private DataManager dataManager;
     private final Map<String, JsonNode> topicData = new ConcurrentHashMap<>();
+    private final Map<String, JsonNode> filteredTopicData = new ConcurrentHashMap<>();
+    private Map<String, Set<String>> httpApiKeyFilter;
 
     public static void main(String[] args) {
         int port = 8080; // 默认端口
@@ -39,6 +47,9 @@ public class MqttSubscriberApplication {
         try {
             // 加载配置
             config = ApplicationConfig.load();
+
+            // 加载http-api-key-filter配置
+            loadHttpApiKeyFilter();
 
             // 初始化数据管理器
             dataManager = new DataManager(config);
@@ -63,6 +74,24 @@ public class MqttSubscriberApplication {
         }
     }
 
+    private void loadHttpApiKeyFilter() throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, List<String>> rawFilter = mapper.readValue(
+                new File("config/http-api-key-filter.json"),
+                mapper.getTypeFactory().constructMapType(Map.class, String.class, List.class));
+
+        // 转换为Set以提高查找效率
+        httpApiKeyFilter = rawFilter.entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        e -> {
+                            Set<String> set = new HashSet<>();
+                            set.addAll(e.getValue());
+                            return set;
+                        }
+                ));
+    }
+
     private void initWebServer(int port) {
         Spark.port(port);
 
@@ -70,14 +99,20 @@ public class MqttSubscriberApplication {
         config.getTopics().forEach((topic, topicConfig) -> {
             Spark.get(topicConfig.getApi(), (req, res) -> {
                 res.type("application/json");
-                JsonNode data = topicData.get(topic);
+                JsonNode data = filteredTopicData.get(topic);
                 if (data != null) {
-                    log.info("Returning data for topic: " + topic);
+                    log.info("Returning filtered data for topic: " + topic);
                     return data.toString();
                 } else {
+                    data = topicData.get(topic);
+                    if (data != null) {
+                        log.info("Returning data for topic: " + topic);
+                        return data.toString();
+                    } else {
 //                    res.status(404);
 //                    return "No data available for topic: " + topic;
-                    return "[]";
+                        return "[]";
+                    }
                 }
             });
             log.info("Registered API: GET " + topicConfig.getApi() + " for topic: " + topic);
@@ -106,7 +141,7 @@ public class MqttSubscriberApplication {
             }
         }
 
-        client.setCallback(new MqttMessageCallback(config, dataManager, topicData));
+        client.setCallback(new MqttMessageCallback(config, dataManager, topicData, filteredTopicData, httpApiKeyFilter));
         client.connect(options);
         log.info("Connected to MQTT broker: " + broker);
     }
