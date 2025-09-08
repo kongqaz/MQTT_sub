@@ -61,8 +61,20 @@ public class MqttSubscriberApplication {
             // 初始化Web服务
             initWebServer(port);
 
-            // 连接MQTT Broker
-            connectToMqttBroker();
+            while (true) {
+                try {
+                    // 连接MQTT Broker
+                    connectToMqttBroker();
+                    break;
+                } catch (Exception e) {
+                    log.error("Connect to MQTT broker fail:", e);
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException ex){
+                        log.error("sleep error:", ex);
+                    }
+                }
+            }
 
             // 订阅主题
             subscribeToTopics();
@@ -130,24 +142,33 @@ public class MqttSubscriberApplication {
         String username = mqttConfig.getUsername();
         String password = mqttConfig.getPassword();
 
-        client = new MqttClient(broker, clientId, new MemoryPersistence());
+        try{
+            client = new MqttClient(broker, clientId, new MemoryPersistence());
 
-        MqttConnectOptions options = new MqttConnectOptions();
-        options.setCleanSession(true);
-        options.setAutomaticReconnect(true); // 启用自动重连
-        options.setConnectionTimeout(15); // 15秒连接超时
-        options.setKeepAliveInterval(30); // 30秒心跳间隔
+            MqttConnectOptions options = new MqttConnectOptions();
+            options.setCleanSession(true);
+            options.setAutomaticReconnect(true); // 启用自动重连
+            options.setConnectionTimeout(15); // 15秒连接超时
+            options.setKeepAliveInterval(30); // 30秒心跳间隔
 
-        if (username != null && !username.isEmpty()) {
-            options.setUserName(username);
-            if (password != null) {
-                options.setPassword(password.toCharArray());
+            if (username != null && !username.isEmpty()) {
+                options.setUserName(username);
+                if (password != null) {
+                    options.setPassword(password.toCharArray());
+                }
             }
-        }
 
-        client.setCallback(new MqttMessageCallback(config, dataManager, topicData, filteredTopicData, httpApiKeyFilter));
-        client.connect(options);
-        log.info("Connected to MQTT broker: " + broker);
+            client.setCallback(new MqttMessageCallback(config, dataManager, topicData, filteredTopicData, httpApiKeyFilter));
+            client.connect(options);
+            log.info("Connected to MQTT broker: " + broker);
+        } catch (Exception e){
+            log.error("Connect to MQTT broker fail:", e);
+            if(client != null){
+                client.close();
+                log.info("MQTT connection closed");
+            }
+            throw e;
+        }
     }
 
     private void subscribeToTopics() throws MqttException {
