@@ -84,7 +84,7 @@ public class MqttMessageCallback implements MqttCallbackExtended {
             if (existingData == null) {
                 existingData = dataManager.loadInitialData(topicConfig.getTable(), topicConfig.getKey());
                 // 同时构建初始的过滤数据
-                if (existingData != null && httpApiKeyFilter.containsKey(topic)) {
+                if (existingData != null && httpApiKeyFilter != null && httpApiKeyFilter.containsKey(topic)) {
                     buildInitialFilteredData(topic, existingData, topicConfig);
                 }
             }
@@ -101,7 +101,7 @@ public class MqttMessageCallback implements MqttCallbackExtended {
                 topicData.put(topic, mergedData);
 
                 // 如果该topic需要过滤，增量更新过滤后的数据
-                if (httpApiKeyFilter.containsKey(topic)) {
+                if (httpApiKeyFilter != null && httpApiKeyFilter.containsKey(topic)) {
                     incrementallyUpdateFilteredData(topic, jsonData, topicConfig);
                 }
 

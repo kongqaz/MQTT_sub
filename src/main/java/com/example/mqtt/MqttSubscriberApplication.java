@@ -48,8 +48,12 @@ public class MqttSubscriberApplication {
             // 加载配置
             config = ApplicationConfig.load();
 
-            // 加载http-api-key-filter配置
-            loadHttpApiKeyFilter();
+            try{
+                // 加载http-api-key-filter配置
+                loadHttpApiKeyFilter();
+            } catch (Exception e) {
+                log.error("loadHttpApiKeyFilter error:", e);
+            }
 
             // 初始化数据管理器
             dataManager = new DataManager(config);
