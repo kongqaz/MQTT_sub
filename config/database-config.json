@@ -1,5 +1,5 @@
 {
-  "url": "jdbc:mysql://localhost:3306/xlsDataAcqDB?useSSL=false&serverTimezone=UTC&characterEncoding=utf-8",
+  "url": "jdbc:mysql://localhost:3306/xlsDataAcqDB?useSSL=false&serverTimezone=UTC&characterEncoding=utf-8&allowPublicKeyRetrieval=true",
   "username": "root",
   "password": "db_password"
 }
