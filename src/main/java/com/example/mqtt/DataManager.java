@@ -37,7 +37,7 @@ public class DataManager {
             hikariConfig.setJdbcUrl(strUrl);
             hikariConfig.setUsername(config.getDatabase().getUsername());
             hikariConfig.setPassword(config.getDatabase().getPassword());
-            hikariConfig.setMaximumPoolSize(10);
+            hikariConfig.setMaximumPoolSize(3);
             // 显式指定驱动类名
             if (strUrl.startsWith("jdbc:mysql")) {
                 hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
@@ -56,7 +56,7 @@ public class DataManager {
             hikariConfig.setKeepaliveTime(30000); // 30秒检查空闲连接
             hikariConfig.setIdleTimeout(600000);   // 10分钟空闲超时
             hikariConfig.setMaxLifetime(1800000);  // 30分钟最大生存期
-            hikariConfig.setMinimumIdle(3);         // 最少保持3个空闲连接
+            hikariConfig.setMinimumIdle(1);         // 最少保持1个空闲连接
             hikariConfig.setLeakDetectionThreshold(60000); // 1分钟检测连接泄漏
 
             this.dataSource = new HikariDataSource(hikariConfig);
