@@ -19,10 +19,18 @@ public class DataManager {
 
     public DataManager(ApplicationConfig config) {
         HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(config.getDatabase().getUrl());
+        String strUrl = config.getDatabase().getUrl();
+        hikariConfig.setJdbcUrl(strUrl);
         hikariConfig.setUsername(config.getDatabase().getUsername());
         hikariConfig.setPassword(config.getDatabase().getPassword());
         hikariConfig.setMaximumPoolSize(10);
+        // 显式指定驱动类名
+        if(strUrl.startsWith("jdbc:mysql")){
+            hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        }
+        else if(strUrl.startsWith("jdbc:kingbase8")) {
+            hikariConfig.setDriverClassName("com.kingbase8.Driver");
+        }
         this.dataSource = new HikariDataSource(hikariConfig);
 
         log.info("Database connection pool initialized");
@@ -83,7 +91,7 @@ public class DataManager {
             // 构建INSERT ... ON DUPLICATE KEY UPDATE语句
             if (data.isObject()) {
                 ObjectNode obj = (ObjectNode) data;
-                insertOrUpdateRecord(tableName, obj);
+                insertOrUpdateRecord(tableName, obj, keyField);
             } else if (data.isArray()) {
 //                for (JsonNode item : data) {
 //                    if (item.isObject()) {
@@ -92,7 +100,7 @@ public class DataManager {
 //                }
                 // 批量处理数组数据
                 if (data.size() > 0) {
-                    batchInsertOrUpdateRecords(tableName, (ArrayNode) data);
+                    batchInsertOrUpdateRecords(tableName, (ArrayNode) data, keyField);
                 }
             }
         } catch (Exception e) {
@@ -101,7 +109,7 @@ public class DataManager {
         }
     }
 
-    private void batchInsertOrUpdateRecords(String tableName, ArrayNode dataArray) throws SQLException {
+    private void batchInsertOrUpdateRecords(String tableName, ArrayNode dataArray, String keyField) throws SQLException {
         if (dataArray.size() == 0) return;
 
         // 获取第一条数据来构建SQL语句
@@ -114,45 +122,36 @@ public class DataManager {
             return;
         }
 
-        // 构建INSERT ... ON DUPLICATE KEY UPDATE语句
-        StringBuilder insertSQL = new StringBuilder();
-        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
-
-        // 收集列名
-        StringBuilder columns = new StringBuilder();
-        StringBuilder placeholders = new StringBuilder();
-        StringBuilder updates = new StringBuilder();
+        // 根据数据库类型确定标识符转义字符
+        String identifierQuote = "\""; // 默认使用双引号（标准SQL）
+        boolean isMySQL = dataSource.getJdbcUrl().startsWith("jdbc:mysql");
+        if (isMySQL) {
+            identifierQuote = "`"; // MySQL使用反引号
+        }
 
         List<String> fieldNames = new ArrayList<>();
+        List<String> fieldNames2 = new ArrayList<>();
         Iterator<Map.Entry<String, JsonNode>> fields = firstItem.fields();
         while (fields.hasNext()) {
-            fieldNames.add(fields.next().getKey());
-        }
-
-        boolean first = true;
-        for (String fieldName : fieldNames) {
-            if (!first) {
-                columns.append(", ");
-                placeholders.append(", ");
-                updates.append(", ");
+            String fieldName = fields.next().getKey();
+            fieldNames2.add(fieldName);
+            if(!isMySQL) {
+                fieldName = fieldName.toLowerCase();
             }
-
-            columns.append("`").append(fieldName).append("`");
-            placeholders.append("?");
-            updates.append("`").append(fieldName).append("` = VALUES(`").append(fieldName).append("`)");
-
-            first = false;
+            fieldNames.add(fieldName);
         }
 
-        insertSQL.append(columns.toString())
-                .append(") VALUES (")
-                .append(placeholders.toString())
-                .append(") ON DUPLICATE KEY UPDATE ")
-                .append(updates.toString());
+        String sql;
+        if (isMySQL) {
+            sql = buildMySQLBatchInsertSQL(tableName, identifierQuote, fieldNames);
+        } else {
+            sql = buildKingbaseBatchInsertSQL(tableName, identifierQuote, fieldNames, keyField);
+        }
+        log.info("SQL:" + sql);
 
         // 执行批量SQL
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(insertSQL.toString())) {
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             // 关闭自动提交以提高性能
             conn.setAutoCommit(false);
@@ -162,7 +161,7 @@ public class DataManager {
                     ObjectNode obj = (ObjectNode) item;
 
                     int index = 1;
-                    for (String fieldName : fieldNames) {
+                    for (String fieldName : fieldNames2) {
                         JsonNode value = obj.get(fieldName);
                         if (value == null || value.isNull()) {
                             pstmt.setObject(index++, null);
@@ -197,7 +196,7 @@ public class DataManager {
         }
     }
 
-    private void insertOrUpdateRecord(String tableName, ObjectNode data) throws SQLException {
+    private void insertOrUpdateRecord(String tableName, ObjectNode data, String keyField) throws SQLException {
         // 获取表的列信息
         Map<String, String> columnTypes = getTableColumns(tableName);
 
@@ -206,48 +205,38 @@ public class DataManager {
             return;
         }
 
-        // 构建INSERT ... ON DUPLICATE KEY UPDATE语句
-        StringBuilder insertSQL = new StringBuilder();
-        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
-
-        // 收集列名和值
-        StringBuilder columns = new StringBuilder();
-        StringBuilder values = new StringBuilder();
-        StringBuilder updates = new StringBuilder();
+        // 根据数据库类型确定标识符转义字符
+        String identifierQuote = "\""; // 默认使用双引号（标准SQL）
+        boolean isMySQL = dataSource.getJdbcUrl().startsWith("jdbc:mysql");
+        if (isMySQL) {
+            identifierQuote = "`"; // MySQL使用反引号
+        }
 
         List<String> fieldNames = new ArrayList<>();
+        List<String> fieldNames2 = new ArrayList<>();
         Iterator<Map.Entry<String, JsonNode>> fields = data.fields();
         while (fields.hasNext()) {
-            fieldNames.add(fields.next().getKey());
-        }
-
-        boolean first = true;
-        for (String fieldName : fieldNames) {
-            if (!first) {
-                columns.append(", ");
-                values.append(", ");
-                updates.append(", ");
+            String fieldName = fields.next().getKey();
+            fieldNames2.add(fieldName);
+            if(!isMySQL) {
+                fieldName = fieldName.toLowerCase();
             }
-
-            columns.append("`").append(fieldName).append("`");
-            values.append("?");
-            updates.append("`").append(fieldName).append("` = VALUES(`").append(fieldName).append("`)");
-
-            first = false;
+            fieldNames.add(fieldName);
         }
 
-        insertSQL.append(columns.toString())
-                .append(") VALUES (")
-                .append(values.toString())
-                .append(") ON DUPLICATE KEY UPDATE ")
-                .append(updates.toString());
+        String sql;
+        if (isMySQL) {
+            sql = buildMySQLInsertSQL(tableName, identifierQuote, fieldNames);
+        } else {
+            sql = buildKingbaseInsertSQL(tableName, identifierQuote, fieldNames, keyField);
+        }
 
         // 执行SQL
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(insertSQL.toString())) {
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             int index = 1;
-            for (String fieldName : fieldNames) {
+            for (String fieldName : fieldNames2) {
                 JsonNode value = data.get(fieldName);
                 if (value.isTextual()) {
                     pstmt.setString(index++, value.asText());
@@ -287,5 +276,167 @@ public class DataManager {
         if (dataSource != null) {
             dataSource.close();
         }
+    }
+
+    private String buildMySQLBatchInsertSQL(String tableName, String identifierQuote, List<String> fieldNames) {
+        StringBuilder insertSQL = new StringBuilder();
+        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
+
+        // 收集列名
+        StringBuilder columns = new StringBuilder();
+        StringBuilder placeholders = new StringBuilder();
+        StringBuilder updates = new StringBuilder();
+
+        boolean first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                columns.append(", ");
+                placeholders.append(", ");
+                updates.append(", ");
+            }
+
+            columns.append(identifierQuote).append(fieldName).append(identifierQuote);
+            placeholders.append("?");
+            updates.append(identifierQuote).append(fieldName).append(identifierQuote)
+                    .append(" = VALUES(").append(identifierQuote).append(fieldName).append(identifierQuote).append(")");
+
+            first = false;
+        }
+
+        insertSQL.append(columns.toString())
+                .append(") VALUES (")
+                .append(placeholders.toString())
+                .append(") ON DUPLICATE KEY UPDATE ")
+                .append(updates.toString());
+
+        return insertSQL.toString();
+    }
+
+    private String buildKingbaseBatchInsertSQL(String tableName, String identifierQuote, List<String> fieldNames, String keyField) {
+        StringBuilder insertSQL = new StringBuilder();
+        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
+
+        // 收集列名
+        StringBuilder columns = new StringBuilder();
+        StringBuilder placeholders = new StringBuilder();
+
+        boolean first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                columns.append(", ");
+                placeholders.append(", ");
+            }
+
+            columns.append(identifierQuote).append(fieldName).append(identifierQuote);
+            placeholders.append("?");
+
+            first = false;
+        }
+
+        insertSQL.append(columns.toString())
+                .append(") VALUES (")
+                .append(placeholders.toString())
+                .append(") ON CONFLICT ("); // 假设第一个字段是主键或唯一约束字段
+
+        insertSQL.append(identifierQuote).append(keyField).append(identifierQuote);
+
+        insertSQL.append(") DO UPDATE SET ");
+
+        // 构建更新部分
+        StringBuilder updates = new StringBuilder();
+        first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                updates.append(", ");
+            }
+            updates.append(identifierQuote).append(fieldName).append(identifierQuote)
+                    .append(" = EXCLUDED.").append(identifierQuote).append(fieldName).append(identifierQuote);
+            first = false;
+        }
+
+        insertSQL.append(updates.toString());
+
+        return insertSQL.toString();
+    }
+
+    private String buildMySQLInsertSQL(String tableName, String identifierQuote, List<String> fieldNames) {
+        StringBuilder insertSQL = new StringBuilder();
+        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
+
+        // 收集列名和值
+        StringBuilder columns = new StringBuilder();
+        StringBuilder values = new StringBuilder();
+        StringBuilder updates = new StringBuilder();
+
+        boolean first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                columns.append(", ");
+                values.append(", ");
+                updates.append(", ");
+            }
+
+            columns.append(identifierQuote).append(fieldName).append(identifierQuote);
+            values.append("?");
+            updates.append(identifierQuote).append(fieldName).append(identifierQuote)
+                    .append(" = VALUES(").append(identifierQuote).append(fieldName).append(identifierQuote).append(")");
+
+            first = false;
+        }
+
+        insertSQL.append(columns.toString())
+                .append(") VALUES (")
+                .append(values.toString())
+                .append(") ON DUPLICATE KEY UPDATE ")
+                .append(updates.toString());
+
+        return insertSQL.toString();
+    }
+
+    private String buildKingbaseInsertSQL(String tableName, String identifierQuote, List<String> fieldNames, String keyField) {
+        StringBuilder insertSQL = new StringBuilder();
+        insertSQL.append("INSERT INTO ").append(tableName).append(" (");
+
+        // 收集列名和值
+        StringBuilder columns = new StringBuilder();
+        StringBuilder values = new StringBuilder();
+
+        boolean first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                columns.append(", ");
+                values.append(", ");
+            }
+
+            columns.append(identifierQuote).append(fieldName).append(identifierQuote);
+            values.append("?");
+
+            first = false;
+        }
+
+        insertSQL.append(columns.toString())
+                .append(") VALUES (")
+                .append(values.toString())
+                .append(") ON CONFLICT ("); // 假设第一个字段是主键或唯一约束字段
+
+        insertSQL.append(identifierQuote).append(keyField).append(identifierQuote);
+
+        insertSQL.append(") DO UPDATE SET ");
+
+        // 构建更新部分
+        StringBuilder updates = new StringBuilder();
+        first = true;
+        for (String fieldName : fieldNames) {
+            if (!first) {
+                updates.append(", ");
+            }
+            updates.append(identifierQuote).append(fieldName).append(identifierQuote)
+                    .append(" = EXCLUDED.").append(identifierQuote).append(fieldName).append(identifierQuote);
+            first = false;
+        }
+
+        insertSQL.append(updates.toString());
+
+        return insertSQL.toString();
     }
 }
