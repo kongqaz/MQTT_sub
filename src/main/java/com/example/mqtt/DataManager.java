@@ -9,34 +9,154 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public class DataManager {
-    private final HikariDataSource dataSource;
+    private HikariDataSource dataSource;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private ApplicationConfig config;
+    private final AtomicBoolean initialized = new AtomicBoolean(false);
 
-    public DataManager(ApplicationConfig config) {
-        HikariConfig hikariConfig = new HikariConfig();
-        String strUrl = config.getDatabase().getUrl();
-        hikariConfig.setJdbcUrl(strUrl);
-        hikariConfig.setUsername(config.getDatabase().getUsername());
-        hikariConfig.setPassword(config.getDatabase().getPassword());
-        hikariConfig.setMaximumPoolSize(10);
-        // 显式指定驱动类名
-        if(strUrl.startsWith("jdbc:mysql")){
-            hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
-        }
-        else if(strUrl.startsWith("jdbc:kingbase8")) {
-            hikariConfig.setDriverClassName("com.kingbase8.Driver");
-        }
-        this.dataSource = new HikariDataSource(hikariConfig);
+    public boolean init(ApplicationConfig config) {
+        this.config = config;
+        initializeDataSource();
+        return initialized.get();
+    }
 
-        log.info("Database connection pool initialized");
+    private void initializeDataSource() {
+        try {
+            log.info("initializeDataSource begin");
+            HikariConfig hikariConfig = new HikariConfig();
+            String strUrl = config.getDatabase().getUrl();
+            hikariConfig.setJdbcUrl(strUrl);
+            hikariConfig.setUsername(config.getDatabase().getUsername());
+            hikariConfig.setPassword(config.getDatabase().getPassword());
+            hikariConfig.setMaximumPoolSize(10);
+            // 显式指定驱动类名
+            if (strUrl.startsWith("jdbc:mysql")) {
+                hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
+            } else if (strUrl.startsWith("jdbc:kingbase8")) {
+                hikariConfig.setDriverClassName("com.kingbase8.Driver");
+            }
+
+            // 设置连接超时时间，避免长时间阻塞
+            hikariConfig.setConnectionTimeout(3000);
+            hikariConfig.setValidationTimeout(3000);
+
+            // 连接验证查询
+            hikariConfig.setConnectionTestQuery("SELECT 1");
+
+            // 启用连接池的自动重连功能
+            hikariConfig.setKeepaliveTime(30000); // 30秒检查空闲连接
+            hikariConfig.setIdleTimeout(600000);   // 10分钟空闲超时
+            hikariConfig.setMaxLifetime(1800000);  // 30分钟最大生存期
+            hikariConfig.setMinimumIdle(3);         // 最少保持3个空闲连接
+            hikariConfig.setLeakDetectionThreshold(60000); // 1分钟检测连接泄漏
+
+            this.dataSource = new HikariDataSource(hikariConfig);
+            initialized.set(true);
+
+            log.info("Database connection pool initialized");
+        } catch (Exception e) {
+            log.error("Failed to initialize database connection pool: ", e);
+            initialized.set(false);
+        }
+    }
+
+    // 添加重连方法
+    private boolean reconnect() {
+        try {
+            // 先检查网络是否可达
+            if (!isNetworkReachable()) {
+                log.warn("Database server is not reachable, skipping reconnect");
+                return false;
+            }
+//            if (dataSource != null) {
+//                try {
+//                    dataSource.close();
+//                } catch (Exception e) {
+//                    log.warn("Error closing existing datasource: ", e);
+//                } finally {
+//                    dataSource = null;
+//                }
+//            }
+            if(dataSource == null) {
+                initializeDataSource();
+            }
+            return initialized.get();
+        } catch (Exception e) {
+            log.error("Failed to reconnect to database: ", e);
+            return false;
+        }
+    }
+
+    private boolean isNetworkReachable() {
+        try {
+            String jdbcUrl = config.getDatabase().getUrl();
+            // 解析 JDBC URL 获取主机和端口
+            // 示例: jdbc:kingbase8://localhost:54321/testdb
+            if (jdbcUrl.startsWith("jdbc:")) {
+                String[] parts = jdbcUrl.split("://");
+                if (parts.length > 1) {
+                    String hostPort = parts[1].split("/")[0];
+                    String[] hostPortParts = hostPort.split(":");
+                    if (hostPortParts.length >= 2) {
+                        String host = hostPortParts[0];
+                        int port = Integer.parseInt(hostPortParts[1]);
+
+                        // 使用 Socket 检查网络连通性
+                        try (Socket socket = new Socket()) {
+                            socket.connect(new InetSocketAddress(host, port), 3000); // 3秒超时
+                            log.info("Database server is reachable: {}:{}", host, port);
+                            return true;
+                        } catch (IOException e) {
+                            log.warn("Database server is not reachable: {}:{}, error: {}", host, port, e.getMessage());
+                            return false;
+                        }
+                    }
+                }
+            }
+            log.warn("Unable to parse JDBC URL for network check: {}", jdbcUrl);
+            return true; // 如果无法解析URL，则假设网络可达
+        } catch (Exception e) {
+            log.error("Error checking network reachability: ", e);
+            return false;
+        }
+    }
+
+    // 检查数据库连接是否可用
+    private boolean isConnectionValid() {
+        if (!initialized.get() || dataSource == null) {
+            return false;
+        }
+
+        try (Connection conn = dataSource.getConnection()) {
+            return conn.isValid(3); // 3秒超时验证
+        } catch (SQLException e) {
+            log.warn("Database connection validation failed: ", e);
+            return false;
+        } catch (Exception e) {
+            log.error("Database connection validation failed2: ", e);
+            return false;
+        }
     }
 
     public JsonNode loadInitialData(String table, String keyField) {
+        // 如果未初始化或连接无效，尝试重连
+        if (!initialized.get() || !isConnectionValid()) {
+            log.info("Database connection not available, attempting to reconnect...");
+            if (!reconnect()) {
+                log.error("Failed to reconnect to database");
+                return null;
+            }
+        }
+
         try (Connection conn = dataSource.getConnection()) {
             String sql = "SELECT * FROM " + table;
             try (Statement stmt = conn.createStatement();
@@ -75,13 +195,25 @@ public class DataManager {
                 return rootNode.size() > 0 ? rootNode : null;
             }
         } catch (SQLException e) {
-            log.error("Error loading initial data: " + e.getMessage());
+            log.error("Error loading initial data: ", e);
             e.printStackTrace();
+            return null;
+        } catch (Exception e) {
+            log.error("Error loading initial data2: ", e);
             return null;
         }
     }
 
     public void saveToDatabase(String table, String keyField, JsonNode data) {
+        // 如果未初始化或连接无效，尝试重连
+        if (!initialized.get() || !isConnectionValid()) {
+            log.info("Database connection not available, attempting to reconnect...");
+            if (!reconnect()) {
+                log.error("Failed to reconnect to database");
+                return;
+            }
+        }
+
         try {
             // 解析表名
             String[] parts = table.split("\\.");
@@ -238,7 +370,9 @@ public class DataManager {
             int index = 1;
             for (String fieldName : fieldNames2) {
                 JsonNode value = data.get(fieldName);
-                if (value.isTextual()) {
+                if (value == null || value.isNull()) {
+                    pstmt.setObject(index++, null);
+                } else if (value.isTextual()) {
                     pstmt.setString(index++, value.asText());
                 } else if (value.isInt()) {
                     pstmt.setInt(index++, value.asInt());

@@ -56,7 +56,18 @@ public class MqttSubscriberApplication {
             }
 
             // 初始化数据管理器
-            dataManager = new DataManager(config);
+            dataManager = new DataManager();
+            while (true) {
+                boolean bInit = dataManager.init(config);
+                if(bInit){
+                    break;
+                }
+                try {
+                    Thread.sleep(5000);
+                } catch (Exception e) {
+                    log.error("Thread sleep error:", e);
+                }
+            }
 
             // 初始化Web服务
             initWebServer(port);
