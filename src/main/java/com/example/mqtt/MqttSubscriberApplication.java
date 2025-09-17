@@ -169,7 +169,7 @@ public class MqttSubscriberApplication {
                 }
             }
 
-            client.setCallback(new MqttMessageCallback(config, dataManager, topicData, filteredTopicData, httpApiKeyFilter));
+            client.setCallback(new MqttMessageCallback(config, dataManager, topicData, filteredTopicData, httpApiKeyFilter, client));
             client.connect(options);
             log.info("Connected to MQTT broker: " + broker);
         } catch (Exception e){

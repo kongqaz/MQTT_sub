@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
+import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,29 +30,52 @@ public class MqttMessageCallback implements MqttCallbackExtended {
     private final Map<String, Map<String, Integer>> filteredDataIndexMap; // 用于快速查找过滤数据中的项
     private final Map<String, Set<String>> httpApiKeyFilter;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private MqttClient client;
 
     private static final Logger loggerDebug = LoggerFactory.getLogger("logger.DEBUG_MSG");
 
     public MqttMessageCallback(ApplicationConfig config, DataManager dataManager,
                                Map<String, JsonNode> topicData,
                                Map<String, JsonNode> filteredTopicData,
-                               Map<String, Set<String>> httpApiKeyFilter) {
+                               Map<String, Set<String>> httpApiKeyFilter,
+                               MqttClient client) {
         this.config = config;
         this.dataManager = dataManager;
         this.topicData = topicData;
         this.filteredTopicData = filteredTopicData;
         this.filteredDataIndexMap = new ConcurrentHashMap<>();
         this.httpApiKeyFilter = httpApiKeyFilter;
+        this.client = client;
     }
 
     @Override
     public void connectComplete(boolean reconnect, String serverURI) {
         log.info("MQTT connection completed. Reconnect: " + reconnect);
+
+        if (reconnect) {
+            // 重新订阅所有主题
+            resubscribeTopics();
+        }
     }
 
     @Override
     public void connectionLost(Throwable cause) {
         log.info("MQTT connection lost: " + cause.getMessage());
+    }
+
+    private void resubscribeTopics() {
+        try {
+            String[] topics = config.getTopics().keySet().toArray(new String[0]);
+            int[] qosLevels = java.util.Arrays.stream(topics)
+                    .mapToInt(s -> 1)
+                    .toArray();
+
+            client.subscribe(topics, qosLevels);
+
+            log.info("Resubscribed to topics: " + config.getTopics().keySet());
+        } catch (Exception e) {
+            log.error("Failed to resubscribe topics: " + e.getMessage());
+        }
     }
 
     @Override
