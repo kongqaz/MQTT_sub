@@ -73,10 +73,11 @@ public class DataManager {
     private boolean reconnect() {
         try {
             // 先检查网络是否可达
-            if (!isNetworkReachable()) {
-                log.warn("Database server is not reachable, skipping reconnect");
-                return false;
-            }
+//            if (!isNetworkReachable()) {
+//                log.warn("Database server is not reachable, skipping reconnect");
+//                return false;
+//            }
+
 //            if (dataSource != null) {
 //                try {
 //                    dataSource.close();
@@ -150,11 +151,12 @@ public class DataManager {
     public JsonNode loadInitialData(String table, String keyField) {
         // 如果未初始化或连接无效，尝试重连
         if (!initialized.get() || !isConnectionValid()) {
-            log.info("Database connection not available, attempting to reconnect...");
-            if (!reconnect()) {
-                log.error("Failed to reconnect to database");
-                return null;
-            }
+            log.info("Database connection not available");
+            return null;
+//            if (!reconnect()) {
+//                log.error("Failed to reconnect to database");
+//                return null;
+//            }
         }
 
         try (Connection conn = dataSource.getConnection()) {
@@ -207,11 +209,12 @@ public class DataManager {
     public void saveToDatabase(String table, String keyField, JsonNode data) {
         // 如果未初始化或连接无效，尝试重连
         if (!initialized.get() || !isConnectionValid()) {
-            log.info("Database connection not available, attempting to reconnect...");
-            if (!reconnect()) {
-                log.error("Failed to reconnect to database");
-                return;
-            }
+            log.info("Database connection not available");
+            return;
+//            if (!reconnect()) {
+//                log.error("Failed to reconnect to database");
+//                return;
+//            }
         }
 
         try {
