@@ -159,8 +159,11 @@ public class DataManager {
 //            }
         }
 
+        String[] parts = table.split("\\.");
+        String tableName = parts.length > 1 ? parts[1] : parts[0];
+
         try (Connection conn = dataSource.getConnection()) {
-            String sql = "SELECT * FROM " + table;
+            String sql = "SELECT * FROM " + tableName;
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
 
